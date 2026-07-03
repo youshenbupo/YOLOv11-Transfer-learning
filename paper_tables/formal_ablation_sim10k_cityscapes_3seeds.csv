@@ -1,0 +1,5 @@
+method,seeds,target_map50_mean,target_map50_std,target_map50_95_mean,target_map50_95_std
+baseline,"0,1,2",0.330139,0.068278,0.191538,0.039445
+geometry_quality,"0,1,2",0.325351,0.089841,0.184283,0.051505
+small_object_threshold,"0,1,2",0.426078,0.011528,0.239014,0.010053
+geometry_small,"0,1,2",0.356423,0.009409,0.204468,0.000913

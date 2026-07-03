@@ -1,0 +1,16 @@
+benchmark,method,target_map50,target_map50_95,note
+sim10k_to_cityscapes,baseline,0.3246,0.1870,reference
+sim10k_to_cityscapes,rank_calibration,0.3715,0.2117,best current result
+sim10k_to_cityscapes,calibration_guided_pseudo,0.3715,0.2117,stable no gain beyond rank_calibration
+sim10k_to_cityscapes,adaptive_pseudo_threshold,0.3715,0.2117,stable no gain beyond rank_calibration
+sim10k_to_cityscapes,progressive_pseudo,0.2833,0.1739,worse than baseline on target AP
+sim10k_to_cityscapes,domain_loss_pretrain,0.0208,0.0127,collapses on target AP
+sim10k_to_cityscapes,cbam_pretrain,0.0153,0.0104,collapses on target AP
+sim10k_to_cityscapes,layerlock_pretrain,0.0035,0.0017,collapses on target AP
+sim10k_to_cityscapes,ema_teacher,0.0062,0.0020,not viable in current form
+cityscapes_to_foggy,baseline,0.1433,0.0871,best current result
+cityscapes_to_foggy,rank_calibration,0.1418,0.0873,tied with baseline
+cityscapes_to_foggy,progressive_pseudo,0.1374,0.0834,slightly worse
+cityscapes_to_foggy,cbam_pretrain,0.0516,0.0302,poor target transfer
+cityscapes_to_foggy,domain_loss_pretrain,0.0345,0.0192,poor target transfer
+cityscapes_to_foggy,layerlock_pretrain,0.0160,0.0091,poor target transfer

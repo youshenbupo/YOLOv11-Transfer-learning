@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+.trae/
+
+# Datasets and generated benchmarks
+data/
+benchmarks/
+source_dataset/
+target_dataset/
+contra_img/
+
+# Training outputs and weights
+runs/
+weights/*.pt
+weights/*.pth
+*.pt
+*.pth
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test caches
+.pytest_cache/
+.coverage
+htmlcov/

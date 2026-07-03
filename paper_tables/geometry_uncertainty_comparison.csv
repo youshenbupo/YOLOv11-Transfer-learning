@@ -1,0 +1,5 @@
+benchmark,method,iterations,epochs_per_iteration,target_map50,target_map50_95,target_map75,precision,recall,note
+cityscapes_to_foggy,baseline,2,3,0.154720,0.092305,0.091488,0.559541,0.179127,formal runner
+cityscapes_to_foggy,geometry_uncertainty_corrected,2,3,0.150022,0.091401,0.094961,0.254219,0.198818,formal rerun after teacher-student lifecycle fix
+sim10k_to_cityscapes,baseline,1,3,0.296268,0.183354,0.191605,0.492918,0.285791,formal runner
+sim10k_to_cityscapes,geometry_uncertainty_corrected,1,3,0.357155,0.205399,0.201270,0.604226,0.316140,student checkpoint; one-iteration training is identical before and after lifecycle fix

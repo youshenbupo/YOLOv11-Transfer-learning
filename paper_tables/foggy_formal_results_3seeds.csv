@@ -1,0 +1,4 @@
+method,seeds,target_map50_mean,target_map50_std,target_map50_95_mean,target_map50_95_std
+baseline,"0,1,2",0.147843,0.007096,0.087310,0.004796
+small_object_offset_003,"0,1,2",0.173864,0.009138,0.103897,0.006251
+small_object_offset_005,"0,1,2",0.166757,0.011760,0.100839,0.007373

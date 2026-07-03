@@ -1,0 +1,5 @@
+benchmark,method,target_map50,target_map50_95,delta_ece,delta_nll,delta_brier
+cityscapes_to_foggy,baseline,0.1433,0.0871,,,
+cityscapes_to_foggy,rank_calibration,0.1418,0.0873,-0.0000038,-0.0000248,-0.0000110
+sim10k_to_cityscapes,baseline,0.3246,0.1870,,,
+sim10k_to_cityscapes,rank_calibration,0.3715,0.2117,-0.0000184,-0.0000462,-0.0000134

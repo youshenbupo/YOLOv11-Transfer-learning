@@ -1,0 +1,7 @@
+setting,seed,epochs_per_iter,iterations,target_map50,target_map50_95,target_map75,precision,recall,source
+baseline,0,3,1,0.2962681308441545,0.1833539526349953,0.19160465643529756,0.4929176419171846,0.28579124876301987,runs/ablation_sim10k_cityscapes/sim10k_to_cityscapes/baseline_seed0/target_detection_metrics.json
+baseline,1,3,1,0.28541828712806083,0.1568265861886532,0.15945797577955628,0.4656543864955227,0.2685700486434625,runs/ablation_sim10k_cityscapes/sim10k_to_cityscapes/baseline_seed1/target_detection_metrics.json
+baseline_quick,0,1,1,0.2552830707123255,0.14098970987018006,0.13488335323667117,0.41374821054395194,0.29142488716956805,runs/quick_ablation_sim10k_cityscapes/sim10k_to_cityscapes/baseline/target_detection_metrics.json
+geometry_quality_quick,0,1,1,0.33335831773896796,0.18941600049736568,0.18483785798714114,0.5323089233323063,0.3202235117128734,runs/quick_ablation_sim10k_cityscapes/sim10k_to_cityscapes/geometry_quality/target_detection_metrics.json
+small_object_threshold_quick,0,1,1,0.389804061633375,0.21554396272871168,0.20788168948218436,0.6222185509569742,0.3483773909305824,runs/quick_ablation_sim10k_cityscapes/sim10k_to_cityscapes/small_object_threshold/target_detection_metrics.json
+geometry_small,1,3,1,0.34473335085248386,0.2024699638025121,0.20437198940273518,0.5328578038621186,0.32559638942617664,runs/quick_ablation_sim10k_cityscapes/sim10k_to_cityscapes/geometry_small/target_detection_metrics_3epoch_seed1.json
