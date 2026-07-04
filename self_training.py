@@ -397,6 +397,86 @@ def _filter_drone_aware_pseudo(
     return filtered, stats
 
 
+def _filter_uncertainty_aware_pseudo(
+    current_txt,
+    calibration_detections,
+    base_conf_threshold,
+    small_area_threshold=0.0025,
+    small_conf_offset=0.03,
+    max_uncertainty_std=0.20,
+    uncertainty_penalty_scale=1.0,
+    use_calibrated_conf=True,
+):
+    """
+    Uncertainty-aware small-object pseudo-label selection.
+
+    Small objects receive a confidence-floor discount, but the discount is
+    reduced (or even inverted) for boxes whose confidence varies a lot across
+    test-time augmented views. This prevents noisy small-object predictions
+    from being promoted just because they are small.
+    """
+    current_preds = _load_prediction_tensor(current_txt)
+    if current_preds is None:
+        return [], {"total": 0, "kept": 0, "small_total": 0, "small_kept": 0}
+    if not calibration_detections:
+        raise ValueError(
+            "Uncertainty-aware pseudo labeling requires calibration metadata. "
+            "Enable --use-test-time-calibration."
+        )
+
+    filtered = []
+    stats = {"total": len(current_preds), "kept": 0, "small_total": 0, "small_kept": 0}
+
+    for idx, pred in enumerate(current_preds):
+        if idx >= len(calibration_detections):
+            continue
+        x1, y1, x2, y2, raw_conf, cls = pred.tolist()
+        area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        is_small = area <= small_area_threshold
+        stats["small_total"] += int(is_small)
+
+        det = calibration_detections[idx]
+        conf_std = float(det.get("conf_std", 0.0))
+        consistency = float(det.get("consistency", 1.0))
+        calibrated_conf = float(det.get("calibrated_conf", raw_conf))
+        conf_to_check = calibrated_conf if use_calibrated_conf else raw_conf
+
+        # Combine TTA confidence std with multi-view consistency.
+        # When only two highly-correlated views are used, conf_std can be
+        # near zero; in that case 1-consistency captures geometric disagreement.
+        uncertainty = max(conf_std, 1.0 - consistency)
+
+        if uncertainty > max_uncertainty_std:
+            continue
+
+        # For small objects, the confidence-floor discount shrinks as
+        # uncertainty grows. Non-small objects use the base threshold without
+        # any discount, but still benefit from the hard uncertainty cap above.
+        if is_small:
+            effective_offset = small_conf_offset * max(
+                0.0,
+                1.0 - uncertainty_penalty_scale * uncertainty,
+            )
+        else:
+            effective_offset = 0.0
+
+        confidence_floor = min(
+            0.999,
+            max(0.0, base_conf_threshold - effective_offset),
+        )
+
+        if conf_to_check >= confidence_floor:
+            xc = (x1 + x2) / 2.0
+            yc = (y1 + y2) / 2.0
+            w = x2 - x1
+            h = y2 - y1
+            filtered.append(f"{int(cls)} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
+            stats["kept"] += 1
+            stats["small_kept"] += int(is_small)
+
+    return filtered, stats
+
+
 def _filter_with_temporal_consistency(current_txt, previous_txt, conf_threshold, consistency_threshold,
                                       calibration_detections=None,
                                       calibration_min_consistency=0.0,
@@ -469,7 +549,11 @@ def generate_pseudo_labels(labels_dir, output_dir, conf_threshold,
                            drone_temporal_power=0.5,
                            drone_min_consistency=0.35,
                            drone_small_area_threshold=0.0025,
-                           drone_small_conf_offset=0.10):
+                           drone_small_conf_offset=0.10,
+                           use_uncertainty_aware_pseudo=False,
+                           uncertainty_max_std=0.20,
+                           uncertainty_penalty_scale=1.0,
+                           uncertainty_use_calibrated_conf=True):
     """
     Filter detection predictions by confidence threshold to generate pseudo labels.
 
@@ -500,6 +584,10 @@ def generate_pseudo_labels(labels_dir, output_dir, conf_threshold,
             f"drone-aware quality(q>={drone_quality_threshold}, "
             f"small_area<={drone_small_area_threshold})"
         )
+    if use_uncertainty_aware_pseudo:
+        mode_bits.append(
+            f"uncertainty-aware(std<={uncertainty_max_std}, penalty={uncertainty_penalty_scale})"
+        )
     mode_msg = f" + {' + '.join(mode_bits)}" if mode_bits else ""
     print(f"\n---> Step 2: Generating pseudo labels (conf >= {conf_threshold}{mode_msg})...")
     os.makedirs(output_dir, exist_ok=True)
@@ -518,7 +606,21 @@ def generate_pseudo_labels(labels_dir, output_dir, conf_threshold,
         dst = os.path.join(output_dir, fname)
         calibration_detections = _load_calibration_detections(calibration_metadata_dir, fname)
 
-        if use_drone_aware_pseudo:
+        if use_uncertainty_aware_pseudo:
+            filtered, image_stats = _filter_uncertainty_aware_pseudo(
+                src,
+                calibration_detections,
+                conf_threshold,
+                small_area_threshold=drone_small_area_threshold,
+                small_conf_offset=drone_small_conf_offset,
+                max_uncertainty_std=uncertainty_max_std,
+                uncertainty_penalty_scale=uncertainty_penalty_scale,
+                use_calibrated_conf=uncertainty_use_calibrated_conf,
+            )
+            kept = image_stats["kept"]
+            for key in drone_stats:
+                drone_stats[key] += image_stats[key]
+        elif use_drone_aware_pseudo:
             prev_src = os.path.join(previous_labels_dir, fname) if previous_labels_dir else None
             filtered, image_stats = _filter_drone_aware_pseudo(
                 src,
@@ -595,9 +697,9 @@ def generate_pseudo_labels(labels_dir, output_dir, conf_threshold,
 
     if use_progressive_refinement and previous_labels_dir:
         print(f"    Consistent predictions kept: {num_consistent}")
-    if use_drone_aware_pseudo:
+    if use_uncertainty_aware_pseudo or use_drone_aware_pseudo:
         print(
-            "    Drone-aware selection: "
+            "    Pseudo-label selection: "
             f"{drone_stats['kept']}/{drone_stats['total']} boxes kept; "
             f"small objects {drone_stats['small_kept']}/{drone_stats['small_total']} kept."
         )
@@ -900,6 +1002,11 @@ def main(opt):
             "--use-drone-aware-pseudo requires --use-test-time-calibration "
             "because geometry consistency comes from multi-view inference."
         )
+    if opt.use_uncertainty_aware_pseudo and not opt.use_test_time_calibration:
+        raise ValueError(
+            "--use-uncertainty-aware-pseudo requires --use-test-time-calibration "
+            "because uncertainty comes from multi-view confidence variance."
+        )
 
     # Find target images directory
     target_img_dir = os.path.join(opt.target_dataset, "unlabels_img")
@@ -1007,6 +1114,10 @@ def main(opt):
             drone_min_consistency=opt.drone_min_consistency,
             drone_small_area_threshold=opt.drone_small_area_threshold,
             drone_small_conf_offset=opt.drone_small_conf_offset,
+            use_uncertainty_aware_pseudo=opt.use_uncertainty_aware_pseudo,
+            uncertainty_max_std=opt.uncertainty_max_std,
+            uncertainty_penalty_scale=opt.uncertainty_penalty_scale,
+            uncertainty_use_calibrated_conf=opt.uncertainty_use_calibrated_conf,
         )
 
         if num_labels == 0:
@@ -1169,6 +1280,14 @@ if __name__ == "__main__":
                         help="Normalized box area below which a detection is treated as a small aerial object")
     parser.add_argument("--drone-small-conf-offset", type=float, default=0.10,
                         help="Amount subtracted from the confidence floor for consistent small objects")
+    parser.add_argument("--use-uncertainty-aware-pseudo", action="store_true", default=False,
+                        help="Use test-time confidence variance to discount small-object pseudo labels adaptively")
+    parser.add_argument("--uncertainty-max-std", type=float, default=0.20,
+                        help="Maximum allowed standard deviation of per-view confidence for a pseudo label")
+    parser.add_argument("--uncertainty-penalty-scale", type=float, default=1.0,
+                        help="How much the small-object confidence offset is reduced per unit confidence std")
+    parser.add_argument("--uncertainty-use-calibrated-conf", action="store_true", default=True,
+                        help="Use calibrated confidence (vs raw confidence) when applying uncertainty-aware filtering")
 
     # Plotting
     parser.add_argument("--plot-results", action="store_true", default=False,

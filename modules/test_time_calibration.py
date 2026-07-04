@@ -108,6 +108,36 @@ def _match_view_score(base_det, aug_tensor, match_iou_threshold):
     return 0.5 * best_iou_value + 0.5 * conf_agreement
 
 
+def _match_view_confidences(base_det, aug_tensors, match_iou_threshold):
+    """
+    Return the matched raw confidence from each augmented view.
+
+    If no same-class box with IoU >= match_iou_threshold is found, the view
+    contributes a confidence of 0.0, which inflates the apparent disagreement
+    and lets downstream filtering treat the detection as uncertain.
+    """
+    confidences = []
+    for aug_tensor in aug_tensors:
+        if aug_tensor.numel() == 0:
+            confidences.append(0.0)
+            continue
+
+        same_class_mask = aug_tensor[:, 5] == base_det[5]
+        candidates = aug_tensor[same_class_mask]
+        if candidates.numel() == 0:
+            confidences.append(0.0)
+            continue
+
+        ious = box_iou(base_det[:4].unsqueeze(0), candidates[:, :4]).squeeze(0)
+        best_iou, best_idx = torch.max(ious, dim=0)
+        if float(best_iou.item()) < match_iou_threshold:
+            confidences.append(0.0)
+            continue
+
+        confidences.append(float(candidates[best_idx, 4].item()))
+    return confidences
+
+
 def calibrate_predictions(
     base_tensor,
     aug_tensors,
@@ -125,18 +155,24 @@ def calibrate_predictions(
     risk_scores = []
     consistency_scores = []
     raw_confidences = []
+    conf_stds = []
 
     for base_det in base_tensor:
         per_view_scores = [
             _match_view_score(base_det, aug_tensor, match_iou_threshold)
             for aug_tensor in aug_tensors
         ]
+        per_view_confs = _match_view_confidences(
+            base_det, aug_tensors, match_iou_threshold
+        )
         consistency_score = float(sum(per_view_scores) / max(len(per_view_scores), 1))
+        conf_std = float(np.std(per_view_confs)) if per_view_confs else 0.0
         raw_conf = float(base_det[4].item())
         risk_score = raw_conf * (1.0 - consistency_score)
         consistency_scores.append(consistency_score)
         raw_confidences.append(raw_conf)
         risk_scores.append(risk_score)
+        conf_stds.append(conf_std)
 
     selected_rank_indices = set()
     if mode == "rank":
@@ -196,6 +232,8 @@ def calibrate_predictions(
                 "raw_conf": raw_conf,
                 "consistency": consistency_score,
                 "risk_score": risk_scores[idx],
+                "conf_std": conf_stds[idx],
+                "per_view_confs": per_view_confs,
                 "multiplier": multiplier,
                 "calibrated_conf": calibrated_conf,
             }

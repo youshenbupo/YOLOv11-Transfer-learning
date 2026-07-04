@@ -409,6 +409,19 @@ def build_ablation_experiments(base_self):
             "notes": "Small-object confidence offset sensitivity: 0.05",
         },
         {
+            "name": "uncertainty_aware_small_object",
+            "self_training_flags": base_self + geom_flags + [
+                "--use-uncertainty-aware-pseudo",
+                "--drone-small-area-threshold", "0.0025",
+                "--drone-small-conf-offset", "0.03",
+                "--uncertainty-max-std", "0.20",
+                "--uncertainty-penalty-scale", "1.0",
+            ],
+            "calibration_eval": True,
+            "calibration_flags": geom_eval,
+            "notes": "Small-object adaptive threshold with uncertainty-aware offset reduction via TTA confidence std",
+        },
+        {
             "name": "ema_teacher",
             "self_training_flags": base_self + [
                 "--use-ema-teacher",
