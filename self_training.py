@@ -30,7 +30,10 @@ import torch
 import numpy as np
 from PIL import Image
 from modules.losses import compute_pseudo_label_quality
-from modules.test_time_calibration import run_calibrated_inference
+from modules.test_time_calibration import (
+    run_calibrated_inference,
+    compute_class_uncertainty_stats,
+)
 
 os.environ.setdefault("POLARS_SKIP_CPU_CHECK", "1")
 
@@ -406,14 +409,18 @@ def _filter_uncertainty_aware_pseudo(
     max_uncertainty_std=0.20,
     uncertainty_penalty_scale=1.0,
     use_calibrated_conf=True,
+    class_uncertainty_stats=None,
+    class_adaptive_uncertainty_lambda=1.0,
 ):
     """
     Uncertainty-aware small-object pseudo-label selection.
 
     Small objects receive a confidence-floor discount, but the discount is
-    reduced (or even inverted) for boxes whose confidence varies a lot across
-    test-time augmented views. This prevents noisy small-object predictions
-    from being promoted just because they are small.
+    reduced for boxes whose confidence varies a lot across test-time augmented
+    views. When class-level uncertainty statistics are provided, the penalty
+    scale and uncertainty cap are adjusted per class: uncertain classes keep
+    more of the small-object offset, while confident classes are held to a
+    stricter standard.
     """
     current_preds = _load_prediction_tensor(current_txt)
     if current_preds is None:
@@ -424,6 +431,9 @@ def _filter_uncertainty_aware_pseudo(
             "Enable --use-test-time-calibration."
         )
 
+    class_stats = class_uncertainty_stats or {}
+    global_mean = class_stats.get("__global__", {}).get("mean_uncertainty", 0.0)
+
     filtered = []
     stats = {"total": len(current_preds), "kept": 0, "small_total": 0, "small_kept": 0}
 
@@ -431,6 +441,7 @@ def _filter_uncertainty_aware_pseudo(
         if idx >= len(calibration_detections):
             continue
         x1, y1, x2, y2, raw_conf, cls = pred.tolist()
+        cls_int = int(cls)
         area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
         is_small = area <= small_area_threshold
         stats["small_total"] += int(is_small)
@@ -446,7 +457,21 @@ def _filter_uncertainty_aware_pseudo(
         # near zero; in that case 1-consistency captures geometric disagreement.
         uncertainty = max(conf_std, 1.0 - consistency)
 
-        if uncertainty > max_uncertainty_std:
+        # Class-adaptive uncertainty scaling.
+        cls_mean = class_stats.get(cls_int, {}).get(
+            "mean_uncertainty", global_mean
+        )
+        delta = cls_mean - global_mean
+        adaptive_max_std = max(
+            0.0,
+            min(1.0, max_uncertainty_std * (1.0 + class_adaptive_uncertainty_lambda * delta)),
+        )
+        adaptive_penalty = max(
+            0.0,
+            uncertainty_penalty_scale * (1.0 - class_adaptive_uncertainty_lambda * delta),
+        )
+
+        if uncertainty > adaptive_max_std:
             continue
 
         # For small objects, the confidence-floor discount shrinks as
@@ -455,7 +480,7 @@ def _filter_uncertainty_aware_pseudo(
         if is_small:
             effective_offset = small_conf_offset * max(
                 0.0,
-                1.0 - uncertainty_penalty_scale * uncertainty,
+                1.0 - adaptive_penalty * uncertainty,
             )
         else:
             effective_offset = 0.0
@@ -553,7 +578,9 @@ def generate_pseudo_labels(labels_dir, output_dir, conf_threshold,
                            use_uncertainty_aware_pseudo=False,
                            uncertainty_max_std=0.20,
                            uncertainty_penalty_scale=1.0,
-                           uncertainty_use_calibrated_conf=True):
+                           uncertainty_use_calibrated_conf=True,
+                           class_uncertainty_stats=None,
+                           class_adaptive_uncertainty_lambda=1.0):
     """
     Filter detection predictions by confidence threshold to generate pseudo labels.
 
@@ -616,6 +643,8 @@ def generate_pseudo_labels(labels_dir, output_dir, conf_threshold,
                 max_uncertainty_std=uncertainty_max_std,
                 uncertainty_penalty_scale=uncertainty_penalty_scale,
                 use_calibrated_conf=uncertainty_use_calibrated_conf,
+                class_uncertainty_stats=class_uncertainty_stats,
+                class_adaptive_uncertainty_lambda=class_adaptive_uncertainty_lambda,
             )
             kept = image_stats["kept"]
             for key in drone_stats:
@@ -1054,6 +1083,55 @@ def main(opt):
         all_map50.append(m50)
         all_map50_95.append(m50_95)
 
+    # Class-adaptive uncertainty statistics
+    class_uncertainty_stats = None
+    if opt.use_uncertainty_aware_pseudo and opt.use_class_adaptive_uncertainty:
+        source_val_img_dir = os.path.join(opt.source_dataset, "images", "val")
+        if not os.path.exists(source_val_img_dir):
+            source_val_img_dir = os.path.join(opt.source_dataset, "val_img", "images")
+        if not os.path.exists(source_val_img_dir):
+            print(
+                "    Warning: could not find source validation images; "
+                "disabling class-adaptive uncertainty."
+            )
+        else:
+            print(
+                "\n---> Computing class-adaptive uncertainty statistics "
+                "on source validation set..."
+            )
+            from ultralytics import YOLO
+            stats_model = YOLO(current_weights)
+            class_uncertainty_stats = compute_class_uncertainty_stats(
+                stats_model,
+                source_val_img_dir,
+                img_size=opt.img_size,
+                device=opt.device,
+                views=opt.calibration_views,
+                conf_thres=0.01,
+                alpha=opt.calibration_alpha,
+                beta=opt.calibration_beta,
+                consistency_threshold=opt.calibration_consistency_threshold,
+                calibration_mode=opt.calibration_mode,
+                match_iou_threshold=opt.calibration_iou_threshold,
+                inference_batch_size=opt.inference_batch_size,
+                small_area_threshold=opt.drone_small_area_threshold,
+            )
+            stats_path = os.path.join(
+                "runs", f"class_uncertainty_stats_{session_stamp}.json"
+            )
+            os.makedirs("runs", exist_ok=True)
+            with open(stats_path, "w", encoding="utf-8") as f:
+                json.dump(class_uncertainty_stats, f, indent=2)
+            print(f"    Stats saved to {stats_path}")
+            for cls, s in sorted(class_uncertainty_stats.items(), key=lambda x: str(x[0])):
+                if cls == "__global__":
+                    print(f"    Global mean uncertainty: {s['mean_uncertainty']:.4f}")
+                    continue
+                print(
+                    f"    Class {cls}: mean_unc={s['mean_uncertainty']:.3f}, "
+                    f"small_mean={s['mean_small_uncertainty']:.3f}, count={s['count']}"
+                )
+
     # Self-training iterations
     for iteration in range(1, opt.iterations + 1):
         print(f"\n{'='*60}")
@@ -1118,6 +1196,8 @@ def main(opt):
             uncertainty_max_std=opt.uncertainty_max_std,
             uncertainty_penalty_scale=opt.uncertainty_penalty_scale,
             uncertainty_use_calibrated_conf=opt.uncertainty_use_calibrated_conf,
+            class_uncertainty_stats=class_uncertainty_stats,
+            class_adaptive_uncertainty_lambda=opt.class_adaptive_uncertainty_lambda,
         )
 
         if num_labels == 0:
@@ -1288,6 +1368,10 @@ if __name__ == "__main__":
                         help="How much the small-object confidence offset is reduced per unit confidence std")
     parser.add_argument("--uncertainty-use-calibrated-conf", action="store_true", default=True,
                         help="Use calibrated confidence (vs raw confidence) when applying uncertainty-aware filtering")
+    parser.add_argument("--use-class-adaptive-uncertainty", action="store_true", default=False,
+                        help="Scale uncertainty penalty/cap per class using source-validation statistics")
+    parser.add_argument("--class-adaptive-uncertainty-lambda", type=float, default=1.0,
+                        help="Strength of per-class uncertainty scaling (0 = global, larger = more class-specific)")
 
     # Plotting
     parser.add_argument("--plot-results", action="store_true", default=False,

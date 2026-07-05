@@ -1,5 +1,6 @@
 import json
 import os
+from collections import defaultdict
 from pathlib import Path
 
 import cv2
@@ -242,6 +243,106 @@ def calibrate_predictions(
 
     mean_consistency = float(sum(image_scores) / max(len(image_scores), 1)) if image_scores else 0.0
     return calibrated_rows, mean_consistency
+
+
+def compute_class_uncertainty_stats(
+    model,
+    image_folder,
+    img_size=640,
+    device="0",
+    views=None,
+    conf_thres=0.01,
+    alpha=0.9,
+    beta=0.1,
+    consistency_threshold=0.35,
+    calibration_mode="selective",
+    match_iou_threshold=0.5,
+    inference_batch_size=16,
+    small_area_threshold=0.0025,
+):
+    """
+    Run calibrated inference on a folder of images and return per-class
+    uncertainty statistics.
+
+    Uncertainty for each detection is defined as max(conf_std, 1-consistency)
+    so that it remains meaningful even with only two TTA views.
+    """
+    views = views or ["original", "hflip"]
+    if views[0] != "original":
+        raise ValueError("views must start with 'original'")
+
+    image_paths = list_image_files(image_folder)
+    class_uncertainties = defaultdict(list)
+    class_small_uncertainties = defaultdict(list)
+
+    inference_batch_size = max(1, int(inference_batch_size))
+    for batch_start in range(0, len(image_paths), inference_batch_size):
+        batch_paths = image_paths[batch_start : batch_start + inference_batch_size]
+        batch_images = [load_image(path) for path in batch_paths]
+        batch_shapes = [image.shape[:2] for image in batch_images]
+        batch_view_tensors = [{} for _ in batch_images]
+
+        for view_name in views:
+            augmented_batch = [apply_view(image, view_name) for image in batch_images]
+            results = model.predict(
+                source=augmented_batch,
+                conf=conf_thres,
+                imgsz=img_size,
+                device=device,
+                batch=len(augmented_batch),
+                save=False,
+                save_txt=False,
+                save_conf=False,
+                verbose=False,
+            )
+            for idx, result in enumerate(results):
+                height, width = batch_shapes[idx]
+                batch_view_tensors[idx][view_name] = result_to_tensor(
+                    result, view_name, width, height
+                )
+
+        for image_path, (height, width), view_tensors in zip(
+            batch_paths, batch_shapes, batch_view_tensors
+        ):
+            base_tensor = view_tensors["original"]
+            aug_tensors = [view_tensors[name] for name in views[1:]]
+            calibrated_rows, _ = calibrate_predictions(
+                base_tensor,
+                aug_tensors,
+                alpha=alpha,
+                beta=beta,
+                match_iou_threshold=match_iou_threshold,
+                mode=calibration_mode,
+                consistency_threshold=consistency_threshold,
+            )
+            for det in calibrated_rows:
+                x1, y1, x2, y2 = det["xyxy"]
+                area_norm = max(0.0, x2 - x1) * max(0.0, y2 - y1) / (width * height)
+                conf_std = det.get("conf_std", 0.0)
+                consistency = det.get("consistency", 1.0)
+                uncertainty = max(conf_std, 1.0 - consistency)
+                cls = int(det["cls"])
+                class_uncertainties[cls].append(uncertainty)
+                if area_norm <= small_area_threshold:
+                    class_small_uncertainties[cls].append(uncertainty)
+
+    stats = {}
+    all_uncertainties = []
+    for cls, vals in class_uncertainties.items():
+        all_uncertainties.extend(vals)
+        arr = np.array(vals)
+        small_vals = class_small_uncertainties.get(cls, [])
+        small_arr = np.array(small_vals) if small_vals else arr
+        stats[cls] = {
+            "mean_uncertainty": float(np.mean(arr)),
+            "std_uncertainty": float(np.std(arr)),
+            "mean_small_uncertainty": float(np.mean(small_arr)),
+            "count": int(len(arr)),
+        }
+
+    global_mean = float(np.mean(all_uncertainties)) if all_uncertainties else 0.0
+    stats["__global__"] = {"mean_uncertainty": global_mean}
+    return stats
 
 
 def xyxy_to_yolo_line(row, width, height, include_conf=True):

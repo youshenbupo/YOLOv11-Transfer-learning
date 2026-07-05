@@ -449,6 +449,21 @@ def build_ablation_experiments(base_self):
             "notes": "Uncertainty-aware small-object threshold with 4 diverse TTA views",
         },
         {
+            "name": "uncertainty_aware_class_adaptive",
+            "self_training_flags": base_self + geom_flags + [
+                "--use-uncertainty-aware-pseudo",
+                "--drone-small-area-threshold", "0.0025",
+                "--drone-small-conf-offset", "0.03",
+                "--uncertainty-max-std", "0.20",
+                "--uncertainty-penalty-scale", "1.0",
+                "--use-class-adaptive-uncertainty",
+                "--class-adaptive-uncertainty-lambda", "1.0",
+            ],
+            "calibration_eval": True,
+            "calibration_flags": geom_eval,
+            "notes": "Uncertainty-aware small-object threshold with class-adaptive penalty/cap from source-val statistics",
+        },
+        {
             "name": "ema_teacher",
             "self_training_flags": base_self + [
                 "--use-ema-teacher",
